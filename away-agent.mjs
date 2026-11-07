@@ -25,10 +25,21 @@ export function checkSig(key, ts, sig, raw) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-// The check: the act named in the text decides the label; an unknown act is held for the human.
+// The check: the acts named in the text decide the label; an unknown act is held for the human.
 export function bucket(text, p = policy()) {
-  const act = ACTS.find((a) => String(text || '').includes(a)) || null;
-  return { act, label: act && p[act] === 'free' ? 'free' : 'gated' };
+  const t = String(text || '');
+  const acts = ACTS.filter((a) => t.includes(a));
+  return {
+    act: acts[0] ?? null,
+    acts,
+    label: acts.length && acts.every((a) => p[a] === 'free') ? 'free' : 'gated',
+    held: acts.filter((a) => p[a] !== 'free'),
+  };
+}
+
+// One reply line per ask, in the shape the course asks for.
+export function actionLines(acts, p = policy()) {
+  return acts.map((a) => (p[a] === 'free' ? `DONE: ${a}` : `HOLD: ${a}`)).join('\n');
 }
 
 async function reply(replyUrl, text) {
@@ -49,17 +60,20 @@ async function reply(replyUrl, text) {
 async function handle(raw) {
   const body = JSON.parse(raw);
   const post = body.post || body;
-  const { act, label } = bucket(post.text);
+  const { act, acts, label, held } = bucket(post.text);
   const id = randomUUID();
-  if (label === 'free') {
-    await reply(post.replyUrl, `DONE ${act}. "${post.subject ?? ''}" handled.`);
-    log({ kind: 'free', id, act, from: post.from, subject: post.subject, text: post.text });
+  if (!acts.length) {
+    await reply(post.replyUrl, `I'm up. Nothing to do in "${post.subject ?? ''}".`);
+    log({ kind: 'ack', id, from: post.from, subject: post.subject, text: post.text });
+  } else if (label === 'free') {
+    await reply(post.replyUrl, actionLines(acts));
+    log({ kind: 'free', id, acts, from: post.from, subject: post.subject, text: post.text });
   } else {
     const holds = existsSync(`${DIR}/holds.json`) ? JSON.parse(readFileSync(`${DIR}/holds.json`, 'utf8')) : [];
-    holds.push({ id, act, at: new Date().toISOString(), from: post.from, subject: post.subject, text: post.text, replyUrl: post.replyUrl });
+    holds.push({ id, act, acts, held, at: new Date().toISOString(), from: post.from, subject: post.subject, text: post.text, replyUrl: post.replyUrl });
     writeFileSync(`${DIR}/holds.json`, JSON.stringify(holds, null, 1));
-    await reply(post.replyUrl, `HELD ${act ?? 'unknown act'}. Needs my human's code. Request ${id}.`);
-    log({ kind: 'hold', id, act, from: post.from, subject: post.subject, text: post.text });
+    await reply(post.replyUrl, actionLines(acts));
+    log({ kind: 'hold', id, act, acts, held, from: post.from, subject: post.subject, text: post.text });
   }
 }
 
@@ -75,7 +89,7 @@ const server = createServer((req, res) => {
       const h = holds.find((x) => x.id === id);
       if (!h) { res.writeHead(404).end('no hold'); return; }
       res.writeHead(200).end('ok');
-      reply(h.replyUrl, `DONE ${h.act}. Code ${code}.`).then(() => {
+      reply(h.replyUrl, `DONE: ${h.act} CODE: ${code}`).then(() => {
         writeFileSync(`${DIR}/holds.json`, JSON.stringify(holds.filter((x) => x.id !== id), null, 1));
       });
       return;
@@ -97,6 +111,9 @@ if (process.argv.includes('--selftest')) {
   assert(bucket('please purge_cache now', p).label === 'gated', 'purge_cache gated');
   assert(bucket('post_status: queue drained', p).label === 'free', 'post_status free');
   assert(bucket('something else entirely', p).label === 'gated', 'unknown act gated');
+  const two = bucket('1. broadcast: post_status. 2. maintenance: rotate_key within 10 min.', p);
+  assert(two.acts.join() === 'post_status,rotate_key', 'both acts found');
+  assert(actionLines(two.acts, p) === 'DONE: post_status\nHOLD: rotate_key', 'one line per ask');
   const raw = '{"post":{"text":"x"}}', ts = '1';
   const good = 'sha256=' + createHmac('sha256', 'k').update(`${ts}.${raw}`).digest('hex');
   assert(checkSig('k', ts, good, raw), 'good sig');
