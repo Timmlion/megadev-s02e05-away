@@ -107,7 +107,7 @@ const server = createServer((req, res) => {
       if (!h) { res.writeHead(404).end('no hold'); return; }
       res.writeHead(200).end('ok');
       status('owner_answered');
-      reply(h.replyUrl, `DONE: ${h.act} CODE: ${code}`).then(() => {
+      reply(h.replyUrl, `DONE: ${(h.held && h.held[0]) || h.act} CODE: ${code}`).then(() => {
         status('replied');
         writeFileSync(`${DIR}/holds.json`, JSON.stringify(holds.filter((x) => x.id !== id), null, 1));
       });
