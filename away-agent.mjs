@@ -18,6 +18,20 @@ const signingKey = () =>
   (existsSync(`${DIR}/signing-key.txt`) ? readFileSync(`${DIR}/signing-key.txt`, 'utf8').trim() : '');
 const log = (o) => appendFileSync(`${DIR}/messages.jsonl`, JSON.stringify({ at: new Date().toISOString(), ...o }) + '\n');
 
+// Status rows are written at the event, never rebuilt later; the course asks for them verbatim.
+const isoOffset = (d) => d.toISOString().replace('Z', '+00:00');
+const roundOf = (d) => {
+  try {
+    return d.getTime() < Date.parse(JSON.parse(readFileSync(`${DIR}/window.json`, 'utf8')).from) ? 1 : 2;
+  } catch {
+    return 2;
+  }
+};
+const status = (event) => {
+  const d = new Date();
+  appendFileSync(`${DIR}/status.jsonl`, JSON.stringify({ at: isoOffset(d), round: roundOf(d), event }) + '\n');
+};
+
 export function checkSig(key, ts, sig, raw) {
   if (!key || !ts || !sig) return false;
   const want = 'sha256=' + createHmac('sha256', key).update(`${ts}.${raw}`).digest('hex');
@@ -60,6 +74,7 @@ async function reply(replyUrl, text) {
 async function handle(raw) {
   const body = JSON.parse(raw);
   const post = body.post || body;
+  status('received');
   const { act, acts, label, held } = bucket(post.text);
   const id = randomUUID();
   if (!acts.length) {
@@ -75,6 +90,8 @@ async function handle(raw) {
     await reply(post.replyUrl, actionLines(acts));
     log({ kind: 'hold', id, act, acts, held, from: post.from, subject: post.subject, text: post.text });
   }
+  status('replied');
+  if (held.length) status('notified');
 }
 
 const server = createServer((req, res) => {
@@ -89,7 +106,9 @@ const server = createServer((req, res) => {
       const h = holds.find((x) => x.id === id);
       if (!h) { res.writeHead(404).end('no hold'); return; }
       res.writeHead(200).end('ok');
+      status('owner_answered');
       reply(h.replyUrl, `DONE: ${h.act} CODE: ${code}`).then(() => {
+        status('replied');
         writeFileSync(`${DIR}/holds.json`, JSON.stringify(holds.filter((x) => x.id !== id), null, 1));
       });
       return;
