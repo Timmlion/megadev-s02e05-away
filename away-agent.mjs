@@ -81,7 +81,8 @@ const server = createServer((req, res) => {
       return;
     }
     if (!checkSig(signingKey(), req.headers['x-course-timestamp'], req.headers['x-course-signature'], raw)) {
-      log({ kind: 'reject', why: 'bad or missing signature', bytes: raw.length });
+      log({ kind: 'reject', why: 'bad or missing signature', bytes: raw.length, keyLen: signingKey().length,
+        headers: req.headers, raw: raw.slice(0, 400) });
       res.writeHead(401).end('bad signature');
       return;
     }
